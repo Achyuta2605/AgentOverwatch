@@ -17,7 +17,7 @@ Nothing leaves your machine. The log lives in `~/.agentoverwatch/agentoverwatch.
 
 ## Quick start
 
-Requires Node.js 20 or newer. Install it from source (see the note below the examples) until it is published to npm.
+Requires Node.js 22.12 or newer. Install it from source (see the note below the examples) until it is published to npm.
 
 Put `agentoverwatch run --` in front of the command that starts any MCP server.
 
