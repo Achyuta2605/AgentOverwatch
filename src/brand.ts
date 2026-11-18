@@ -7,3 +7,7 @@ export const CLI_NAME = "agentoverwatch";
 export const HOME_DIR_NAME = ".agentoverwatch";
 /** Environment variable that overrides the database path. */
 export const DB_ENV_VAR = "AGENTOVERWATCH_DB";
+/** Policy file looked up in the working directory. */
+export const CONFIG_FILE_NAME = "agentoverwatch.yaml";
+/** Environment variable that points at a policy file. */
+export const CONFIG_ENV_VAR = "AGENTOVERWATCH_CONFIG";

@@ -1,7 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { ConfigError, type LoadedConfig, loadConfig, policyFor } from "./config.js";
 import { Gateway } from "./gateway.js";
+import { Guard } from "./guard.js";
 import { LogStore } from "./store.js";
 import { UpstreamProcess } from "./upstream.js";
 
@@ -10,7 +12,11 @@ export interface RunOptions {
   args: string[];
   name?: string;
   dbPath?: string;
+  /** Policy file. Defaults to ./agentoverwatch.yaml, then ~/.agentoverwatch/config.yaml. */
+  configPath?: string;
   verbose?: boolean;
+  /** How long to wait for a person to approve a call. */
+  approvalTimeoutMs?: number;
 }
 
 /**
@@ -30,6 +36,16 @@ export function inferServerName(command: string, args: string[]): string {
 /** Runs one gateway session and resolves with the exit code the process should use. */
 export async function runGateway(opts: RunOptions): Promise<number> {
   const log = (m: string) => process.stderr.write(`[agentoverwatch] ${m}\n`);
+
+  // Load the policy before anything starts: a broken policy must stop the server, not be ignored.
+  let loaded: LoadedConfig;
+  try {
+    loaded = loadConfig(opts.configPath);
+  } catch (err) {
+    log(err instanceof ConfigError ? err.message : `could not read policy file: ${(err as Error).message}`);
+    return 1;
+  }
+
   const store = new LogStore(opts.dbPath);
   const sessionId = randomUUID();
   const serverName = opts.name ?? inferServerName(opts.command, opts.args);
@@ -50,10 +66,29 @@ export async function runGateway(opts: RunOptions): Promise<number> {
     pid: server.pid,
     startedAt: Date.now(),
   });
-  if (opts.verbose) log(`session ${sessionId.slice(0, 8)} started for ${serverName}`);
+  if (opts.verbose) {
+    log(`session ${sessionId.slice(0, 8)} started for ${serverName}`);
+    log(loaded.path ? `policy: ${loaded.path}` : "policy: none found, using defaults (pin tools, block changed ones)");
+  }
 
+  const guard = new Guard({
+    store,
+    policy: policyFor(loaded.config, serverName),
+    serverName,
+    sessionId,
+    cwd: process.cwd(),
+    warn: log,
+  });
   const agent = new StdioServerTransport();
-  const gateway = new Gateway({ agent, server, store, sessionId, warn: log });
+  const gateway = new Gateway({
+    agent,
+    server,
+    store,
+    sessionId,
+    guard,
+    warn: log,
+    approvalTimeoutMs: opts.approvalTimeoutMs,
+  });
 
   return new Promise<number>((resolve) => {
     let finished = false;

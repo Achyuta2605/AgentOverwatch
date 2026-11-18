@@ -8,7 +8,16 @@ import { DB_ENV_VAR, HOME_DIR_NAME } from "./brand.js";
 export const MAX_STORED_BYTES = 32 * 1024;
 
 export type Direction = "agent_to_server" | "server_to_agent";
-export type CallStatus = "pending" | "ok" | "error" | "tool_error" | "cancelled" | "no_response";
+export type CallStatus = "pending" | "ok" | "error" | "tool_error" | "cancelled" | "no_response" | "blocked";
+
+export type EventKind =
+  | "pin_created"
+  | "pin_changed"
+  | "pin_new_tool"
+  | "tool_hidden"
+  | "call_blocked"
+  | "approval_granted"
+  | "approval_denied";
 
 export interface SessionStart {
   id: string;
@@ -51,6 +60,29 @@ export interface CallRow {
   duration_ms: number | null;
   request_bytes: number;
   response_bytes: number | null;
+  blocked_by: string | null;
+}
+
+export interface PinRow {
+  server_name: string;
+  tool_name: string;
+  approved_hash: string | null;
+  approved_def: string | null;
+  pending_hash: string | null;
+  pending_def: string | null;
+  pending_since: number | null;
+  first_seen: number;
+  approved_at: number | null;
+}
+
+export interface EventRow {
+  id: number;
+  session_id: string | null;
+  server_name: string;
+  kind: EventKind;
+  tool_name: string | null;
+  detail: string | null;
+  at: number;
 }
 
 export interface CallQuery {
@@ -59,6 +91,7 @@ export interface CallQuery {
   serverName?: string;
   toolName?: string;
   onlyProblems?: boolean;
+  onlyBlocked?: boolean;
 }
 
 export function defaultDbPath(): string {
@@ -111,6 +144,31 @@ const MIGRATIONS: string[] = [
   CREATE INDEX calls_started ON calls(started_at);
   CREATE INDEX calls_tool ON calls(tool_name);
   `,
+  `
+  ALTER TABLE calls ADD COLUMN blocked_by TEXT;
+  CREATE TABLE tool_pins (
+    server_name TEXT NOT NULL,
+    tool_name TEXT NOT NULL,
+    approved_hash TEXT,
+    approved_def TEXT,
+    pending_hash TEXT,
+    pending_def TEXT,
+    pending_since INTEGER,
+    first_seen INTEGER NOT NULL,
+    approved_at INTEGER,
+    PRIMARY KEY (server_name, tool_name)
+  );
+  CREATE TABLE events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    server_name TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    tool_name TEXT,
+    detail TEXT,
+    at INTEGER NOT NULL
+  );
+  CREATE INDEX events_at ON events(at);
+  `,
 ];
 
 /**
@@ -160,7 +218,7 @@ export class LogStore {
       ),
       finishCall: this.db.prepare(
         `UPDATE calls SET status = @status, response_json = @responseJson, error_message = @errorMessage,
-           duration_ms = @durationMs, response_bytes = @responseBytes WHERE id = @id`,
+           duration_ms = @durationMs, response_bytes = @responseBytes, blocked_by = @blockedBy WHERE id = @id`,
       ),
       abandonPending: this.db.prepare(
         "UPDATE calls SET status = 'no_response' WHERE session_id = ? AND status = 'pending'",
@@ -213,7 +271,13 @@ export class LogStore {
 
   finishRequest(
     rowId: number,
-    r: { status: Exclude<CallStatus, "pending">; response?: unknown; errorMessage?: string | null; durationMs: number },
+    r: {
+      status: Exclude<CallStatus, "pending">;
+      response?: unknown;
+      errorMessage?: string | null;
+      durationMs: number;
+      blockedBy?: string | null;
+    },
   ): void {
     const { text, bytes } = encodePayload(r.response);
     this.stmts.finishCall.run({
@@ -223,6 +287,7 @@ export class LogStore {
       errorMessage: r.errorMessage ?? null,
       durationMs: r.durationMs,
       responseBytes: r.response === undefined ? null : bytes,
+      blockedBy: r.blockedBy ?? null,
     });
   }
 
@@ -242,6 +307,7 @@ export class LogStore {
       args.tool = q.toolName;
     }
     if (q.onlyProblems) where.push("c.status NOT IN ('ok', 'pending')");
+    if (q.onlyBlocked) where.push("c.status = 'blocked'");
     const sql = `SELECT c.*, s.server_name FROM calls c JOIN sessions s ON s.id = c.session_id
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY c.started_at DESC, c.id DESC LIMIT @limit`;
@@ -257,6 +323,98 @@ export class LogStore {
          GROUP BY s.id ORDER BY s.started_at DESC LIMIT ?`,
       )
       .all(limit) as SessionRow[];
+  }
+
+  // ---- tool pins -------------------------------------------------------------------------
+
+  getPins(serverName: string): Map<string, PinRow> {
+    const rows = this.db.prepare("SELECT * FROM tool_pins WHERE server_name = ?").all(serverName) as PinRow[];
+    return new Map(rows.map((r) => [r.tool_name, r]));
+  }
+
+  listPins(serverName?: string): PinRow[] {
+    return (
+      serverName
+        ? this.db.prepare("SELECT * FROM tool_pins WHERE server_name = ? ORDER BY tool_name").all(serverName)
+        : this.db.prepare("SELECT * FROM tool_pins ORDER BY server_name, tool_name").all()
+    ) as PinRow[];
+  }
+
+  /** Trusts a tool definition: it becomes the pinned version and any pending change is cleared. */
+  pinApproved(serverName: string, toolName: string, hash: string, def: string, at: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO tool_pins (server_name, tool_name, approved_hash, approved_def, first_seen, approved_at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (server_name, tool_name) DO UPDATE SET approved_hash = excluded.approved_hash,
+           approved_def = excluded.approved_def, approved_at = excluded.approved_at,
+           pending_hash = NULL, pending_def = NULL, pending_since = NULL`,
+      )
+      .run(serverName, toolName, hash, def, at, at);
+  }
+
+  /** Records a definition that differs from the pinned one (or a new tool awaiting approval). */
+  pinPending(serverName: string, toolName: string, hash: string, def: string, at: number): void {
+    this.db
+      .prepare(
+        `INSERT INTO tool_pins (server_name, tool_name, pending_hash, pending_def, pending_since, first_seen)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT (server_name, tool_name) DO UPDATE SET pending_hash = excluded.pending_hash,
+           pending_def = excluded.pending_def,
+           pending_since = CASE WHEN tool_pins.pending_hash IS excluded.pending_hash THEN tool_pins.pending_since
+                                ELSE excluded.pending_since END`,
+      )
+      .run(serverName, toolName, hash, def, at, at);
+  }
+
+  /** Drops a pending change because the server went back to the approved definition. */
+  clearPending(serverName: string, toolName: string): void {
+    this.db
+      .prepare(
+        "UPDATE tool_pins SET pending_hash = NULL, pending_def = NULL, pending_since = NULL WHERE server_name = ? AND tool_name = ?",
+      )
+      .run(serverName, toolName);
+  }
+
+  /** Approves pending changes. Returns the tools that were approved. */
+  approvePending(serverName: string, toolName: string | undefined, at: number): string[] {
+    const rows = this.listPins(serverName).filter((p) => p.pending_hash && (!toolName || p.tool_name === toolName));
+    const stmt = this.db.prepare(
+      `UPDATE tool_pins SET approved_hash = pending_hash, approved_def = pending_def, approved_at = ?,
+         pending_hash = NULL, pending_def = NULL, pending_since = NULL WHERE server_name = ? AND tool_name = ?`,
+    );
+    this.db.transaction(() => {
+      for (const r of rows) stmt.run(at, serverName, r.tool_name);
+    })();
+    return rows.map((r) => r.tool_name);
+  }
+
+  /** Forgets every pin for a server; the next session pins its tools again. */
+  resetPins(serverName: string): number {
+    return this.db.prepare("DELETE FROM tool_pins WHERE server_name = ?").run(serverName).changes;
+  }
+
+  // ---- security events -------------------------------------------------------------------
+
+  recordEvent(e: {
+    sessionId: string | null;
+    serverName: string;
+    kind: EventKind;
+    toolName?: string | null;
+    detail?: string | null;
+    at: number;
+  }): void {
+    this.db
+      .prepare("INSERT INTO events (session_id, server_name, kind, tool_name, detail, at) VALUES (?, ?, ?, ?, ?, ?)")
+      .run(e.sessionId, e.serverName, e.kind, e.toolName ?? null, e.detail ?? null, e.at);
+  }
+
+  listEvents(q: { limit?: number; serverName?: string } = {}): EventRow[] {
+    return this.db
+      .prepare(
+        `SELECT * FROM events ${q.serverName ? "WHERE server_name = @server" : ""} ORDER BY at DESC, id DESC LIMIT @limit`,
+      )
+      .all({ limit: q.limit ?? 50, server: q.serverName }) as EventRow[];
   }
 
   close(): void {
