@@ -87,6 +87,6 @@ describe("LogStore", () => {
 
   it("is safe to reopen an existing database", () => {
     const store = seeded();
-    expect(store.db.pragma("user_version", { simple: true })).toBe(1);
+    expect(store.db.pragma("user_version", { simple: true })).toBe(2);
   });
 });

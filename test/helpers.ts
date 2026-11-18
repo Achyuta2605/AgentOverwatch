@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { ElicitRequestSchema } from "@modelcontextprotocol/sdk/types.js";
 
 export const ROOT = resolve(import.meta.dirname, "..");
 export const CLI = join(ROOT, "dist", "cli.js");
@@ -26,6 +27,10 @@ export async function connect(opts: {
   serverArgs?: string[];
   extraGatewayArgs?: string[];
   env?: Record<string, string>;
+  /** Policy file for the gateway. */
+  config?: string;
+  /** If set, the client advertises elicitation support and answers approval prompts with this. */
+  onApproval?: (message: string) => "accept" | "decline" | "cancel" | Promise<"accept" | "decline" | "cancel">;
 }): Promise<Connected> {
   const env = { ...(process.env as Record<string, string>), ...opts.env };
   const serverCmd = [process.execPath, FIXTURE, ...(opts.serverArgs ?? [])];
@@ -33,12 +38,30 @@ export async function connect(opts: {
     ? new StdioClientTransport({ command: process.execPath, args: serverCmd.slice(1), env, stderr: "pipe" })
     : new StdioClientTransport({
         command: process.execPath,
-        args: [CLI, "run", "--db", opts.db ?? "", ...(opts.extraGatewayArgs ?? []), "--", ...serverCmd],
+        args: [
+          CLI,
+          "run",
+          "--db",
+          opts.db ?? "",
+          ...(opts.config ? ["--config", opts.config] : []),
+          ...(opts.extraGatewayArgs ?? []),
+          "--",
+          ...serverCmd,
+        ],
         env,
         stderr: "pipe",
       });
   const errors: Error[] = [];
-  const client = new Client({ name: "test-agent", version: "9.9.9" });
+  const client = new Client(
+    { name: "test-agent", version: "9.9.9" },
+    { capabilities: opts.onApproval ? { elicitation: {} } : {} },
+  );
+  const onApproval = opts.onApproval;
+  if (onApproval) {
+    client.setRequestHandler(ElicitRequestSchema, async (req) => ({
+      action: await onApproval(String((req.params as { message?: string }).message)),
+    }));
+  }
   await client.connect(transport);
   // Registered after connect so it captures protocol-level problems such as non-JSON on stdout.
   const previous = transport.onerror;
