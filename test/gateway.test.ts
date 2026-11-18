@@ -56,8 +56,8 @@ describe("pass-through", () => {
   });
 
   it("passes the full environment through to the server", async () => {
-    const { client } = await gateway({ env: { AGENTGATE_TEST_SECRET: "s3cret" } });
-    const result = await client.callTool({ name: "env", arguments: { name: "AGENTGATE_TEST_SECRET" } });
+    const { client } = await gateway({ env: { AGENTOVERWATCH_TEST_SECRET: "s3cret" } });
+    const result = await client.callTool({ name: "env", arguments: { name: "AGENTOVERWATCH_TEST_SECRET" } });
     expect(textOf(result)).toBe("s3cret");
   });
 

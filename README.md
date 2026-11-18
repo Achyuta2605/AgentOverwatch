@@ -1,10 +1,10 @@
-# AgentGate
+# AgentOverwatch
 
 **A security gateway between AI agents and their MCP tools.**
 
-Coding agents like Claude Code and Cursor now call dozens of third-party MCP tools on their own. Any one of those tools can change its description to smuggle in instructions, return output with a hidden prompt injection, or get stuck in a loop that burns money. AgentGate sits in the middle of every tool call, so you can see what your agent is doing and, soon, stop it when something is wrong.
+Coding agents like Claude Code and Cursor now call dozens of third-party MCP tools on their own. Any one of those tools can change its description to smuggle in instructions, return output with a hidden prompt injection, or get stuck in a loop that burns money. AgentOverwatch sits in the middle of every tool call, so you can see what your agent is doing and, soon, stop it when something is wrong.
 
-> **Status: week 1 of 6.** Today AgentGate is a transparent gateway that records every call. Blocking features land over the next weeks (see [Roadmap](#roadmap)).
+> **Status: week 1 of 6.** Today AgentOverwatch is a transparent gateway that records every call. Blocking features land over the next weeks (see [Roadmap](#roadmap)).
 
 ## What it does today
 
@@ -13,13 +13,13 @@ Coding agents like Claude Code and Cursor now call dozens of third-party MCP too
 - **Flags problems:** protocol errors, tool-reported errors, cancelled calls and requests the server never answered.
 - **Adds about 0.4 ms per call** (p50; 0.5 ms at p95), measured over 1,000 calls against a local server.
 
-Nothing leaves your machine. The log lives in `~/.agentgate/agentgate.db`.
+Nothing leaves your machine. The log lives in `~/.agentoverwatch/agentoverwatch.db`.
 
 ## Quick start
 
 Requires Node.js 20 or newer. Install it from source (see the note below the examples) until it is published to npm.
 
-Put `agentgate run --` in front of the command that starts any MCP server.
+Put `agentoverwatch run --` in front of the command that starts any MCP server.
 
 **Claude Code** (`.mcp.json` in your project, or `claude mcp add`):
 
@@ -27,7 +27,7 @@ Put `agentgate run --` in front of the command that starts any MCP server.
 {
   "mcpServers": {
     "filesystem": {
-      "command": "agentgate",
+      "command": "agentoverwatch",
       "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
     }
   }
@@ -35,7 +35,7 @@ Put `agentgate run --` in front of the command that starts any MCP server.
 ```
 
 ```bash
-claude mcp add filesystem -- agentgate run -- npx -y @modelcontextprotocol/server-filesystem .
+claude mcp add filesystem -- agentoverwatch run -- npx -y @modelcontextprotocol/server-filesystem .
 ```
 
 **Cursor** (`~/.cursor/mcp.json` or `.cursor/mcp.json`): the same `command` and `args` as above.
@@ -43,10 +43,10 @@ claude mcp add filesystem -- agentgate run -- npx -y @modelcontextprotocol/serve
 Then use your agent as normal, and look at what happened:
 
 ```bash
-agentgate logs              # most recent calls
-agentgate logs --problems   # only errors, cancellations, missing responses
-agentgate logs --tool read_text_file
-agentgate sessions          # one row per gateway session
+agentoverwatch logs              # most recent calls
+agentoverwatch logs --problems   # only errors, cancellations, missing responses
+agentoverwatch logs --tool read_text_file
+agentoverwatch sessions          # one row per gateway session
 ```
 
 ```
@@ -60,33 +60,33 @@ TIME                 SESSION   SERVER             DIR  METHOD                   
 
 That log is from a real Claude Code session. `←` is a request the server sent back to the agent.
 
-> AgentGate is not on npm yet. Until it is, install it from source:
+> AgentOverwatch is not on npm yet. Until it is, install it from source:
 >
 > ```bash
-> git clone https://github.com/Achyuta2605/agentgate && cd agentgate
-> npm install && npm run build && npm link   # puts `agentgate` on your PATH
+> git clone https://github.com/Achyuta2605/agentoverwatch && cd agentoverwatch
+> npm install && npm run build && npm link   # puts `agentoverwatch` on your PATH
 > ```
 
 ## CLI
 
 | Command | What it does |
 | --- | --- |
-| `agentgate run [--name <name>] [--db <path>] [-v] -- <command> [args...]` | Start an MCP server behind the gateway. `--name` sets the label in logs (otherwise guessed from the command). |
-| `agentgate logs [--limit n] [--session id] [--server name] [--tool name] [--problems] [--json]` | Show recent calls. |
-| `agentgate sessions [--limit n] [--json]` | Show recent sessions with call and problem counts. |
+| `agentoverwatch run [--name <name>] [--db <path>] [-v] -- <command> [args...]` | Start an MCP server behind the gateway. `--name` sets the label in logs (otherwise guessed from the command). |
+| `agentoverwatch logs [--limit n] [--session id] [--server name] [--tool name] [--problems] [--json]` | Show recent calls. |
+| `agentoverwatch sessions [--limit n] [--json]` | Show recent sessions with call and problem counts. |
 
-Set `AGENTGATE_DB` to keep the log somewhere else.
+Set `AGENTOVERWATCH_DB` to keep the log somewhere else.
 
 ## How it works
 
 ```
- Claude Code / Cursor  ──stdio──▶  AgentGate  ──stdio──▶  MCP server
-                       ◀─────────  │  logs   ◀─────────
-                                   ▼
-                          ~/.agentgate/agentgate.db
+ Claude Code / Cursor  ──stdio──▶  AgentOverwatch  ──stdio──▶  MCP server
+                       ◀─────────        │         ◀─────────
+                                         ▼ logs
+                         ~/.agentoverwatch/agentoverwatch.db
 ```
 
-AgentGate starts the real server as a child process with your full environment, then relays newline-delimited JSON-RPC in both directions, in order. Each request is written to SQLite when it is seen and updated when its response arrives, so a crash still leaves a record. Payloads over 32 KB are truncated in the log, never in transit. The server's stderr passes straight through to your agent's log.
+AgentOverwatch starts the real server as a child process with your full environment, then relays newline-delimited JSON-RPC in both directions, in order. Each request is written to SQLite when it is seen and updated when its response arrives, so a crash still leaves a record. Payloads over 32 KB are truncated in the log, never in transit. The server's stderr passes straight through to your agent's log.
 
 ## Roadmap
 

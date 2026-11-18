@@ -29,7 +29,7 @@ export function inferServerName(command: string, args: string[]): string {
 
 /** Runs one gateway session and resolves with the exit code the process should use. */
 export async function runGateway(opts: RunOptions): Promise<number> {
-  const log = (m: string) => process.stderr.write(`[agentgate] ${m}\n`);
+  const log = (m: string) => process.stderr.write(`[agentoverwatch] ${m}\n`);
   const store = new LogStore(opts.dbPath);
   const sessionId = randomUUID();
   const serverName = opts.name ?? inferServerName(opts.command, opts.args);

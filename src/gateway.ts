@@ -43,7 +43,7 @@ export class Gateway {
   private closed = false;
 
   constructor(private readonly opts: GatewayOptions) {
-    this.warn = opts.warn ?? ((m) => process.stderr.write(`[agentgate] ${m}\n`));
+    this.warn = opts.warn ?? ((m) => process.stderr.write(`[agentoverwatch] ${m}\n`));
   }
 
   /** Wires both transports together. The server transport should already be started. */

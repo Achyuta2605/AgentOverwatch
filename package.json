@@ -1,11 +1,11 @@
 {
-  "name": "agentgate",
+  "name": "agentoverwatch",
   "version": "0.1.0",
   "description": "A security gateway between AI agents and their MCP tools: logs every call today; blocks poisoned tools, prompt injection and runaway loops next.",
   "license": "Apache-2.0",
   "type": "module",
   "bin": {
-    "agentgate": "dist/cli.js"
+    "agentoverwatch": "dist/cli.js"
   },
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -27,7 +27,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/Achyuta2605/agentgate.git"
+    "url": "git+https://github.com/Achyuta2605/agentoverwatch.git"
   },
   "keywords": [
     "mcp",

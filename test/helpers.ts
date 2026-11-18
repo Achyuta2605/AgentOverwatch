@@ -9,7 +9,7 @@ export const CLI = join(ROOT, "dist", "cli.js");
 export const FIXTURE = join(ROOT, "test", "fixtures", "echo-server.mjs");
 
 export function tempDir(): { dir: string; db: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), "agentgate-test-"));
+  const dir = mkdtempSync(join(tmpdir(), "agentoverwatch-test-"));
   return { dir, db: join(dir, "log.db"), cleanup: () => rmSync(dir, { recursive: true, force: true }) };
 }
 

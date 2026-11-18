@@ -62,7 +62,7 @@ export interface CallQuery {
 }
 
 export function defaultDbPath(): string {
-  return process.env[DB_ENV_VAR] || join(homedir(), HOME_DIR_NAME, "agentgate.db");
+  return process.env[DB_ENV_VAR] || join(homedir(), HOME_DIR_NAME, "agentoverwatch.db");
 }
 
 /** Serialises a value for storage, truncating very large payloads. Returns the text and the full size in bytes. */
@@ -115,7 +115,7 @@ const MIGRATIONS: string[] = [
 
 /**
  * Local SQLite log of every gateway session and every JSON-RPC request that crosses it.
- * WAL mode lets `agentgate logs` read while a gateway is writing.
+ * WAL mode lets `agentoverwatch logs` read while a gateway is writing.
  */
 export class LogStore {
   readonly db: Database.Database;
