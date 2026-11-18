@@ -1,0 +1,58 @@
+{
+  "name": "agentoverwatch",
+  "version": "0.1.0",
+  "description": "A security gateway between AI agents and their MCP tools: logs every call today; blocks poisoned tools, prompt injection and runaway loops next.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "agentoverwatch": "dist/cli.js"
+  },
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "biome check .",
+    "format": "biome format --write .",
+    "test": "npm run build && vitest run",
+    "dev": "tsx src/cli.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Achyuta2605/agentoverwatch.git"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "ai-agents",
+    "security",
+    "prompt-injection",
+    "gateway",
+    "claude",
+    "cursor"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "better-sqlite3": "^13.2.0",
+    "commander": "^15.1.0",
+    "cross-spawn": "^7.0.6"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^2.6.8",
+    "@types/better-sqlite3": "^9.6.0",
+    "@types/cross-spawn": "^6.0.6",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1",
+    "zod": "^4.6.7"
+  }
+}
