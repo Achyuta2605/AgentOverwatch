@@ -32,7 +32,13 @@ export async function connect(opts: {
   /** If set, the client advertises elicitation support and answers approval prompts with this. */
   onApproval?: (message: string) => "accept" | "decline" | "cancel" | Promise<"accept" | "decline" | "cancel">;
 }): Promise<Connected> {
-  const env = { ...(process.env as Record<string, string>), ...opts.env };
+  // Tests never call Claude: clear any API key so scanning is rules-only and deterministic.
+  const env = {
+    ...(process.env as Record<string, string>),
+    AGENTOVERWATCH_ANTHROPIC_API_KEY: "",
+    ANTHROPIC_API_KEY: "",
+    ...opts.env,
+  };
   const serverCmd = [process.execPath, FIXTURE, ...(opts.serverArgs ?? [])];
   const transport = opts.direct
     ? new StdioClientTransport({ command: process.execPath, args: serverCmd.slice(1), env, stderr: "pipe" })

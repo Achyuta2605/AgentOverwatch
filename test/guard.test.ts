@@ -85,11 +85,20 @@ describe("tool pinning", () => {
     expect(cli("pins", "echo-server").stdout).toMatch(/echo\s+CHANGED, blocked/);
     await closeAll();
 
-    // After approval, the new definition is trusted.
+    // Approving the new definition settles the pin, but the injection scanner still hides this one,
+    // because the new description is itself an attack.
     expect(cli("approve", "echo-server", "echo").stdout).toContain("Approved 1 tool(s) on echo-server: echo");
     const after = await gateway({ env: { FIXTURE_POISON: "1" } });
-    expect(await toolNames(after)).toContain("echo");
-    expect(text(await after.client.callTool({ name: "echo", arguments: { text: "ok" } }))).toBe("ok");
+    expect(await toolNames(after)).not.toContain("echo");
+    const stillBlocked = await after.client.callTool({ name: "echo", arguments: { text: "ok" } });
+    expect(text(stillBlocked)).toMatch(/description of "echo" looks like a prompt injection/);
+    await closeAll();
+
+    // With scanning off, the approved definition is trusted.
+    const noScan = policy(`servers:\n  "*":\n    injection:\n      mode: off\n`);
+    const trusted = await gateway({ config: noScan, env: { FIXTURE_POISON: "1" } });
+    expect(await toolNames(trusted)).toContain("echo");
+    expect(text(await trusted.client.callTool({ name: "echo", arguments: { text: "ok" } }))).toBe("ok");
   });
 
   it("catches a description that changes in the middle of a session", async () => {
@@ -118,7 +127,7 @@ describe("tool pinning", () => {
   });
 
   it("can only warn instead of block", async () => {
-    const config = policy(`servers:\n  "*":\n    pinning: warn\n`);
+    const config = policy(`servers:\n  "*":\n    pinning: warn\n    injection:\n      mode: off\n`);
     await toolNames(await gateway({ config }));
     await closeAll();
     const c = await gateway({ config, env: { FIXTURE_POISON: "1" } });

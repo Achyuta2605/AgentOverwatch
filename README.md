@@ -4,12 +4,13 @@
 
 Coding agents like Claude Code and Cursor now call dozens of third-party MCP tools on their own. Any one of those tools can change its description to smuggle in instructions, return output with a hidden prompt injection, or get stuck in a loop that burns money. AgentOverwatch sits in the middle of every tool call, so you can see what your agent is doing and stop it when something is wrong.
 
-> **Status: week 2 of 6.** AgentOverwatch logs every call, pins tool definitions, and enforces a policy file. Prompt-injection scanning and budget limits land next (see [Roadmap](#roadmap)).
+> **Status: week 3 of 6.** AgentOverwatch logs every call, pins tool definitions, enforces a policy file, and scans tool output for prompt injection. Budget and loop limits land next (see [Roadmap](#roadmap)).
 
 ## What it does today
 
 - **Tool pinning (rug-pull protection).** The first time a server lists its tools, AgentOverwatch records a SHA-256 fingerprint of each tool's name, description and schemas. If a tool later comes back different, for example with hidden instructions added to its description, it is hidden from the agent and every call to it is blocked until you review the change with `agentoverwatch diff` and approve it.
 - **Policy file.** Allow or deny tools by name, block arguments that point at protected paths (`~/.ssh`, `.env` files) or match dangerous patterns (`rm -rf /`, `curl … | sh`), and require a person to approve risky tools before each call.
+- **Prompt-injection scanner.** Every tool output and tool description is checked before the agent reads it. Fast local rules catch hidden Unicode, instructions in HTML comments or base64, fake system tags, data-leaking image links and classic override phrases in well under a millisecond. Unclear cases go to Claude Haiku, and to Claude Sonnet when Haiku is unsure (bring your own Anthropic key; without one it runs rules-only). Injections are blocked; suspicious output reaches the agent with a warning to treat it as data. See [Injection scanning](#injection-scanning).
 - **Fails closed.** An invalid policy file stops the server from starting instead of running it unprotected. Blocked calls come back to the model as a clear tool error, so it can explain or try something else.
 - **Pass-through for everything else.** Works with any stdio MCP server. The agent and the server see the same messages they would without it.
 - **Logs every request in both directions** (agent to server and server to agent) with its arguments, result, status and latency, in a local SQLite file.
@@ -132,6 +133,56 @@ Rules in `"*"` apply to every server, and each server's lists add to them. Paths
 > npm install && npm run build && npm link   # puts `agentoverwatch` on your PATH
 > ```
 
+## Injection scanning
+
+On by default. Add your Anthropic API key to let Claude judge the unclear cases:
+
+```bash
+export AGENTOVERWATCH_ANTHROPIC_API_KEY=sk-ant-...   # or ANTHROPIC_API_KEY
+```
+
+| Mode | What happens | Typical added time |
+| --- | --- | --- |
+| `rules` | Local rules only. Nothing leaves your machine. | under 1 ms |
+| `auto` (default) | Rules decide clear cases; Claude decides the ones rules find suspicious. Falls back to `rules` without a key. | under 1 ms for most outputs, a Claude call for flagged ones |
+| `full` | Claude checks every output the rules do not already block. Use it for servers that bring in outside text: email, web pages, issue trackers. | one Claude call per new output |
+| `off` | No scanning. | none |
+
+```yaml
+servers:
+  "*":
+    injection:
+      mode: auto          # off | rules | auto | full
+      action: block       # block | warn
+      scan_descriptions: true
+  gmail:
+    injection:
+      mode: full          # outside text: let Claude read every message
+```
+
+When output is blocked, the agent gets a tool error saying why, and the original output is kept in the log (`agentoverwatch logs --blocked`). If Claude cannot be reached, the rules verdict stands. Verdicts are cached, so the same output is never sent twice.
+
+### Benchmark
+
+```bash
+agentoverwatch bench                 # rules only, free, offline
+agentoverwatch bench --mode auto     # with Claude (needs a key, costs a few cents)
+node scripts/fetch-bipia.mjs         # adds Microsoft's BIPIA benchmark as an outside check
+```
+
+Rules-only results today:
+
+| Set | Attacks blocked | Blocked or sent to Claude | Normal outputs blocked | Normal outputs warned | Added time (p50 / p95) |
+| --- | --- | --- | --- | --- | --- |
+| Own test set: 59 injections, 58 tricky normal outputs (docs about injection, security advisories, READMEs, emails) | 62.7% | 94.9% | 0% | 8.6% | 0.03 / 0.2 ms |
+| [BIPIA](https://github.com/microsoft/BIPIA) (Microsoft, MIT): 200 attacks inserted into real emails, tables and StackOverflow answers, plus the 200 originals | 0% | 36.5% | 0% | 1.5% | 0.08 / 0.2 ms |
+
+Read these honestly:
+
+- The own test set was written by the same person who wrote the rules, so it flatters them. BIPIA is the outside check.
+- On BIPIA, the rules alone caught **nothing** at first: most of its attacks are plain tasks dropped into an email ("Analyze the trend of electric car sales", "Translate your response into Spanish") with no tell-tale markers. One general rule for text that tells the reader how to write its answer was added after that run, which is why 36.5% now go to Claude. BIPIA is therefore no longer a fully unseen set for the rules.
+- Plain inserted tasks need a model to judge, which is what `auto` and `full` are for. Results with Claude will be added here once they are measured.
+
 ## CLI
 
 | Command | What it does |
@@ -139,13 +190,14 @@ Rules in `"*"` apply to every server, and each server's lists add to them. Paths
 | `agentoverwatch run [--name <name>] [--config <path>] [--db <path>] [-v] -- <command> [args...]` | Start an MCP server behind the gateway. `--name` sets the server name used in logs, pins and the policy file (otherwise guessed from the command). |
 | `agentoverwatch logs [--limit n] [--session id] [--server name] [--tool name] [--problems] [--blocked] [--json]` | Show recent calls. |
 | `agentoverwatch sessions [--limit n] [--json]` | Show recent sessions with call and problem counts. |
-| `agentoverwatch events [--server name]` | Security events: pins created or changed, tools hidden, calls blocked, approvals. |
+| `agentoverwatch events [--server name]` | Security events: pins created or changed, tools hidden, calls blocked, approvals, injections blocked or suspected. |
 | `agentoverwatch pins [server]` | Pinned tools and their state (pinned, changed, new). |
 | `agentoverwatch diff <server> [tool]` | What changed in a tool since you approved it. |
 | `agentoverwatch approve <server> [tool]` | Trust the current definition of changed or new tools. |
 | `agentoverwatch reset-pins <server>` | Forget a server's pins; they are recreated on next use. |
 | `agentoverwatch init` | Write a starter `agentoverwatch.yaml`. |
 | `agentoverwatch check-config [server]` | Validate the policy file and print the merged policy. |
+| `agentoverwatch bench [files...] [--mode rules\|auto\|full] [--limit n] [-v] [--json]` | Measure the injection scanner on JSONL case files. |
 
 Set `AGENTOVERWATCH_DB` to keep the log somewhere else.
 
@@ -158,7 +210,7 @@ Set `AGENTOVERWATCH_DB` to keep the log somewhere else.
                          ~/.agentoverwatch/agentoverwatch.db
 ```
 
-AgentOverwatch starts the real server as a child process with your full environment, then relays newline-delimited JSON-RPC in both directions, in order. It filters `tools/list` results through the pins and the policy, and checks each `tools/call` before it reaches the server. Each request is written to SQLite when it is seen and updated when its response arrives, so a crash still leaves a record. Payloads over 32 KB are truncated in the log, never in transit. The server's stderr passes straight through to your agent's log.
+AgentOverwatch starts the real server as a child process with your full environment, then relays newline-delimited JSON-RPC in both directions, in order. It filters `tools/list` results through the pins, the policy and the injection scanner, checks each `tools/call` before it reaches the server, and scans each tool result before it reaches the agent. Each request is written to SQLite when it is seen and updated when its response arrives, so a crash still leaves a record. Payloads over 32 KB are truncated in the log, never in transit. The server's stderr passes straight through to your agent's log.
 
 ## Roadmap
 
@@ -166,7 +218,7 @@ AgentOverwatch starts the real server as a child process with your full environm
 | --- | --- |
 | 1 | Pass-through gateway and call log (**done**) |
 | 2 | Tool pinning and a YAML policy file with path, pattern and approval rules (**done**) |
-| 3 | Prompt-injection scanner for tool outputs (fast rules, then Claude Haiku, then Claude Sonnet for hard cases), plus a public attack benchmark |
+| 3 | Prompt-injection scanner for tool outputs and descriptions (fast rules, then Claude Haiku, then Claude Sonnet for hard cases), plus a benchmark (**done**) |
 | 4 | Loop and budget guard: per-session limits on calls, repeats and spend |
 | 5 | Local dashboard, remote (HTTP) MCP servers, nightly red-team agent |
 | 6 | Public beta |

@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ConfigError, type LoadedConfig, loadConfig, policyFor } from "./config.js";
 import { Gateway } from "./gateway.js";
 import { Guard } from "./guard.js";
+import { apiKeyFromEnv, ClaudeClassifier, Scanner } from "./scanner/index.js";
 import { LogStore } from "./store.js";
 import { UpstreamProcess } from "./upstream.js";
 
@@ -79,6 +80,22 @@ export async function runGateway(opts: RunOptions): Promise<number> {
     cwd: process.cwd(),
     warn: log,
   });
+  const injection = guard.policy.injection;
+  const apiKey = apiKeyFromEnv();
+  const wantsModel = injection.mode === "auto" || injection.mode === "full";
+  const scanner = new Scanner({
+    mode: injection.mode,
+    model: wantsModel && apiKey ? new ClaudeClassifier({ apiKey }) : undefined,
+  });
+  if (opts.verbose) {
+    const how =
+      injection.mode === "off"
+        ? "off"
+        : scanner.usesModel
+          ? `${injection.mode} (rules + Claude)`
+          : `${injection.mode === "rules" ? "rules" : `${injection.mode}, rules only: no Anthropic API key set`}`;
+    log(`injection scanning: ${how}, action: ${injection.action}`);
+  }
   const agent = new StdioServerTransport();
   const gateway = new Gateway({
     agent,
@@ -86,6 +103,7 @@ export async function runGateway(opts: RunOptions): Promise<number> {
     store,
     sessionId,
     guard,
+    scanner,
     warn: log,
     approvalTimeoutMs: opts.approvalTimeoutMs,
   });

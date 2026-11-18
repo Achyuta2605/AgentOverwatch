@@ -17,7 +17,10 @@ export type EventKind =
   | "tool_hidden"
   | "call_blocked"
   | "approval_granted"
-  | "approval_denied";
+  | "approval_denied"
+  | "injection_blocked"
+  | "injection_warned"
+  | "injection_suspected";
 
 export interface SessionStart {
   id: string;
