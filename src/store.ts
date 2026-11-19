@@ -20,7 +20,8 @@ export type EventKind =
   | "approval_denied"
   | "injection_blocked"
   | "injection_warned"
-  | "injection_suspected";
+  | "injection_suspected"
+  | "limit_reached";
 
 export interface SessionStart {
   id: string;
@@ -315,6 +316,17 @@ export class LogStore {
       ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
       ORDER BY c.started_at DESC, c.id DESC LIMIT @limit`;
     return this.db.prepare(sql).all(args) as CallRow[];
+  }
+
+  /** Tool calls to a server since a time, not counting blocked ones. */
+  countToolCalls(serverName: string, since: number): number {
+    const row = this.db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM calls c JOIN sessions s ON s.id = c.session_id
+         WHERE s.server_name = ? AND c.method = 'tools/call' AND c.status != 'blocked' AND c.started_at >= ?`,
+      )
+      .get(serverName, since) as { n: number };
+    return row.n;
   }
 
   listSessions(limit = 20): SessionRow[] {

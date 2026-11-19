@@ -4,6 +4,7 @@ import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
 import { ConfigError, type LoadedConfig, loadConfig, policyFor } from "./config.js";
 import { Gateway } from "./gateway.js";
 import { Guard } from "./guard.js";
+import { Limiter } from "./limits.js";
 import { apiKeyFromEnv, ClaudeClassifier, Scanner } from "./scanner/index.js";
 import { LogStore } from "./store.js";
 import { UpstreamProcess } from "./upstream.js";
@@ -96,6 +97,12 @@ export async function runGateway(opts: RunOptions): Promise<number> {
           : `${injection.mode === "rules" ? "rules" : `${injection.mode}, rules only: no Anthropic API key set`}`;
     log(`injection scanning: ${how}, action: ${injection.action}`);
   }
+  const limiter = new Limiter(guard.policy.limits, () => {
+    const midnight = new Date();
+    midnight.setHours(0, 0, 0, 0);
+    // The call being checked is already logged as pending, so it does not count against itself.
+    return Math.max(0, store.countToolCalls(serverName, midnight.getTime()) - 1);
+  });
   const agent = new StdioServerTransport();
   const gateway = new Gateway({
     agent,
@@ -104,6 +111,7 @@ export async function runGateway(opts: RunOptions): Promise<number> {
     sessionId,
     guard,
     scanner,
+    limiter,
     warn: log,
     approvalTimeoutMs: opts.approvalTimeoutMs,
   });
