@@ -114,6 +114,8 @@ In a real Claude Code session against that server, the model never saw the poiso
 
 ## Policy file
 
+Full reference: [docs/policy.md](docs/policy.md).
+
 Run `agentoverwatch init` to write a starter `agentoverwatch.yaml` in your project. AgentOverwatch looks for the policy in this order: `--config <path>`, the `AGENTOVERWATCH_CONFIG` environment variable, `./agentoverwatch.yaml` (the directory your agent starts the server in), then `~/.agentoverwatch/config.yaml`. With no file, it pins tools and blocks changed ones, and allows everything else.
 
 ```yaml
@@ -241,6 +243,10 @@ agentoverwatch dashboard          # http://127.0.0.1:4319
 
 It only listens on 127.0.0.1, refuses requests for other host names, and approving needs a token that only the page itself has, so other websites cannot use it.
 
+## Nightly red team
+
+Every night a GitHub Actions job (`.github/workflows/redteam.yml`) asks Claude to write about 30 fresh prompt injections across rotating techniques (hidden Unicode, base64, fake system tags, task hijacks, poisoned tool descriptions, multilingual attacks and more), plus tricky normal outputs, and measures the scanner on them with and without Claude. The report lands on the job page and the cases are kept as an artifact, so misses can become new test cases. Run it yourself with `agentoverwatch redteam` (needs an API key, costs a few cents).
+
 ## CLI
 
 | Command | What it does |
@@ -257,6 +263,7 @@ It only listens on 127.0.0.1, refuses requests for other host names, and approvi
 | `agentoverwatch init` | Write a starter `agentoverwatch.yaml`. |
 | `agentoverwatch check-config [server]` | Validate the policy file and print the merged policy. |
 | `agentoverwatch dashboard [--port n]` | Open the local dashboard. |
+| `agentoverwatch redteam [-t n] [-p n] [-b n] [-o dir]` | Have Claude write fresh attacks and measure the scanner on them. |
 | `agentoverwatch bench [files...] [--mode rules\|auto\|full] [--limit n] [-v] [--json]` | Measure the injection scanner on JSONL case files. |
 
 Set `AGENTOVERWATCH_DB` to keep the log somewhere else.
@@ -280,7 +287,7 @@ AgentOverwatch starts the real server as a child process with your full environm
 | 2 | Tool pinning and a YAML policy file with path, pattern and approval rules (**done**) |
 | 3 | Prompt-injection scanner for tool outputs and descriptions (fast rules, then Claude Haiku, then Claude Sonnet for hard cases), plus a benchmark (**done**) |
 | 4 | Loop and budget guard: limits on repeated calls, failing tools, call rate, calls and output per session, calls per day (**done**) |
-| 5 | Local dashboard and remote (HTTP) MCP servers (**done**), nightly red-team agent |
+| 5 | Local dashboard, remote (HTTP) MCP servers, nightly red-team agent (**done**) |
 | 6 | Public beta |
 
 ## Development

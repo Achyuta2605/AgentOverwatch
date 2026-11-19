@@ -1,0 +1,40 @@
+name: Nightly red team
+
+# Claude writes fresh prompt injections every night and the scanner is measured against them.
+# Needs a repository secret named ANTHROPIC_API_KEY. Without it the job explains and stops.
+on:
+  schedule:
+    - cron: "30 21 * * *" # 03:00 IST
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  redteam:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Red team
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -z "$ANTHROPIC_API_KEY" ]; then
+            echo "No ANTHROPIC_API_KEY secret set; skipping." | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          node dist/cli.js redteam --techniques 6 --per 5 --benign 10 --out redteam-results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: redteam-results
+          path: redteam-results/
+          if-no-files-found: ignore
+          retention-days: 30

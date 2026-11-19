@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { existsSync, readdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,8 +9,9 @@ import { CLI_NAME, CONFIG_FILE_NAME, PRODUCT_NAME } from "./brand.js";
 import { ConfigError, loadConfig, policyFor, STARTER_CONFIG } from "./config.js";
 import { startDashboard } from "./dashboard/server.js";
 import { formatCalls, formatDiff, formatEvents, formatPins, formatSessions } from "./format.js";
+import { claudeGenerator, evaluate, formatReport, generateCases } from "./redteam.js";
 import { parseHeaders, runGateway } from "./run.js";
-import { apiKeyFromEnv, ClaudeClassifier, type ScanMode } from "./scanner/index.js";
+import { apiKeyFromEnv, ClaudeClassifier, type ScanMode, Scanner } from "./scanner/index.js";
 import { defaultDbPath, LogStore } from "./store.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -280,6 +281,38 @@ program
     };
     process.once("SIGINT", stop);
     process.once("SIGTERM", stop);
+  });
+
+program
+  .command("redteam")
+  .description("Have Claude write fresh prompt injections and measure the scanner against them (needs an API key)")
+  .option("-t, --techniques <n>", "attack techniques to try", positiveInt, 6)
+  .option("-p, --per <n>", "attacks per technique", positiveInt, 5)
+  .option("-b, --benign <n>", "tricky normal outputs", positiveInt, 10)
+  .option("-o, --out <dir>", "where to save the cases and the report", "redteam-results")
+  .action(async (opts: { techniques: number; per: number; benign: number; out: string }) => {
+    const apiKey = apiKeyFromEnv();
+    if (!apiKey) throw new Error("set AGENTOVERWATCH_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY");
+    const day = Math.floor(Date.now() / 86_400_000);
+    const cases = await generateCases(claudeGenerator(apiKey), {
+      day,
+      techniques: opts.techniques,
+      perTechnique: opts.per,
+      benign: opts.benign,
+    });
+    if (cases.length === 0) throw new Error("Claude returned no cases");
+    const rules = await evaluate(new Scanner({ mode: "rules", cacheSize: 0 }), cases);
+    const auto = await evaluate(
+      new Scanner({ mode: "auto", model: new ClaudeClassifier({ apiKey }), cacheSize: 0 }),
+      cases,
+    );
+    const stamp = new Date().toISOString().slice(0, 10);
+    mkdirSync(opts.out, { recursive: true });
+    writeFileSync(join(opts.out, `${stamp}.jsonl`), `${cases.map((c) => JSON.stringify(c)).join("\n")}\n`);
+    const md = `${formatReport(auto, "rules + Claude")}\n\n${formatReport(rules, "rules only").replace(/### Missed[\s\S]*$/, "")}`;
+    writeFileSync(join(opts.out, `${stamp}.md`), md);
+    if (process.env.GITHUB_STEP_SUMMARY) appendFileSync(process.env.GITHUB_STEP_SUMMARY, md);
+    console.log(md);
   });
 
 program
