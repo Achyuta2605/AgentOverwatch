@@ -1,12 +1,15 @@
 #!/usr/bin/env node
-import { existsSync, writeFileSync } from "node:fs";
+import { existsSync, readdirSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { Command, InvalidArgumentError } from "commander";
+import { formatBench, runBench } from "./bench.js";
 import { CLI_NAME, CONFIG_FILE_NAME, PRODUCT_NAME } from "./brand.js";
 import { ConfigError, loadConfig, policyFor, STARTER_CONFIG } from "./config.js";
 import { formatCalls, formatDiff, formatEvents, formatPins, formatSessions } from "./format.js";
 import { runGateway } from "./run.js";
+import { apiKeyFromEnv, ClaudeClassifier, type ScanMode } from "./scanner/index.js";
 import { defaultDbPath, LogStore } from "./store.js";
 
 const { version } = createRequire(import.meta.url)("../package.json") as { version: string };
@@ -226,6 +229,43 @@ program
       console.error(err instanceof ConfigError ? err.message : (err as Error).message);
       process.exitCode = 1;
     }
+  });
+
+program
+  .command("bench")
+  .description("Measure the injection scanner: attacks caught, normal outputs wrongly blocked, added time")
+  .argument("[files...]", "JSONL case files (default: the bundled test set, plus bench/external if fetched)")
+  .option("-m, --mode <mode>", "rules | auto | full (auto and full call Claude and need an API key)", "rules")
+  .option("-n, --limit <n>", "only the first n cases of each file", positiveInt)
+  .option("--json", "print the raw report")
+  .option("-v, --verbose", "list the ids of missed attacks and wrongly blocked outputs")
+  .action(async (files: string[], opts: { mode: string; limit?: number; json?: boolean; verbose?: boolean }) => {
+    if (!["rules", "auto", "full"].includes(opts.mode)) throw new Error(`unknown mode "${opts.mode}"`);
+    const mode = opts.mode as ScanMode;
+    const apiKey = apiKeyFromEnv();
+    if (mode !== "rules" && !apiKey) {
+      throw new Error(`mode "${mode}" calls Claude: set AGENTOVERWATCH_ANTHROPIC_API_KEY or ANTHROPIC_API_KEY`);
+    }
+    const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+    const targets = files.length
+      ? files
+      : ["cases", "external"].flatMap((d) => {
+          const dir = join(root, "bench", d);
+          return existsSync(dir)
+            ? readdirSync(dir)
+                .filter((f) => f.endsWith(".jsonl"))
+                .map((f) => join(dir, f))
+            : [];
+        });
+    if (targets.length === 0) throw new Error("no case files found");
+    const model = mode !== "rules" && apiKey ? new ClaudeClassifier({ apiKey }) : undefined;
+    const reports = [];
+    for (const file of targets) {
+      const report = await runBench(file, { mode, model, limit: opts.limit });
+      reports.push(report);
+      if (!opts.json) console.log(`${formatBench(report, opts.verbose)}\n`);
+    }
+    if (opts.json) console.log(JSON.stringify(reports, null, 2));
   });
 
 program.parseAsync().catch((err: Error) => {

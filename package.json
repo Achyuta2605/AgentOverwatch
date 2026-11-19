@@ -11,6 +11,7 @@
   "types": "dist/index.d.ts",
   "files": [
     "dist",
+    "bench/cases",
     "README.md",
     "LICENSE"
   ],
@@ -40,6 +41,7 @@
     "cursor"
   ],
   "dependencies": {
+    "@anthropic-ai/sdk": "^1.10.0",
     "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "^13.2.0",
     "commander": "^15.1.0",

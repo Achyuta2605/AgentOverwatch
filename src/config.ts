@@ -46,6 +46,17 @@ export const RuleSchema = z
     message: "a rule needs at least one of deny_paths, allow_paths or deny_regex",
   });
 
+export const InjectionSchema = z
+  .object({
+    /** off | rules | auto (rules, then Claude for unclear cases when a key is set) | full (Claude checks everything). */
+    mode: z.enum(["off", "rules", "auto", "full"]).optional(),
+    /** What to do with tool output judged to be an injection. Suspicious output is always passed on with a warning. */
+    action: z.enum(["block", "warn"]).optional(),
+    /** Also scan tool descriptions, and hide tools whose description is an injection. */
+    scan_descriptions: z.boolean().optional(),
+  })
+  .strict();
+
 export const ServerPolicySchema = z
   .object({
     /** What to do when a pinned tool's definition changes. */
@@ -64,6 +75,7 @@ export const ServerPolicySchema = z
       .strict()
       .optional(),
     rules: z.array(RuleSchema).optional(),
+    injection: InjectionSchema.optional(),
   })
   .strict();
 
@@ -86,6 +98,11 @@ export interface ServerPolicy {
   deny: string[];
   approve: string[];
   rules: Rule[];
+  injection: {
+    mode: "off" | "rules" | "auto" | "full";
+    action: "block" | "warn";
+    scanDescriptions: boolean;
+  };
 }
 
 export class ConfigError extends Error {}
@@ -156,6 +173,11 @@ export function policyFor(config: Config, serverName: string): ServerPolicy {
     deny: [...(base.tools?.deny ?? []), ...(own.tools?.deny ?? [])],
     approve: [...(base.tools?.approve ?? []), ...(own.tools?.approve ?? [])],
     rules: [...(base.rules ?? []), ...(own.rules ?? [])],
+    injection: {
+      mode: own.injection?.mode ?? base.injection?.mode ?? "auto",
+      action: own.injection?.action ?? base.injection?.action ?? "block",
+      scanDescriptions: own.injection?.scan_descriptions ?? base.injection?.scan_descriptions ?? true,
+    },
   };
 }
 
@@ -171,6 +193,10 @@ servers:
       - arg: "*"
         deny_paths: ["~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "**/.env", "**/.env.*"]
         message: Access to credential files is blocked by policy.
+    injection:
+      mode: auto          # off | rules | auto | full. auto and full use Claude when an API key is set
+      action: block       # block | warn: what to do with tool output that is a prompt injection
+      scan_descriptions: true
 
   # Settings for one server, by the name shown in \`agentoverwatch sessions\`.
   # filesystem:

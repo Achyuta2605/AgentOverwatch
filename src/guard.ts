@@ -58,11 +58,16 @@ export class Guard {
     },
   ) {}
 
+  get serverName(): string {
+    return this.opts.serverName;
+  }
+
   get policy(): ServerPolicy {
     return this.opts.policy;
   }
 
-  private event(kind: EventKind, toolName: string | null, detail: string): void {
+  /** Records a security event for this server and session. */
+  event(kind: EventKind, toolName: string | null, detail: string): void {
     this.opts.store.recordEvent({
       sessionId: this.opts.sessionId,
       serverName: this.opts.serverName,
@@ -151,7 +156,8 @@ export class Guard {
     return visible;
   }
 
-  private hide(name: string, reason: string, by: string): void {
+  /** Hides a tool from the agent for this session and blocks calls to it. */
+  hide(name: string, reason: string, by: string): void {
     this.hidden.set(name, { reason, by });
     this.event("tool_hidden", name, reason);
   }
