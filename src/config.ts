@@ -4,6 +4,7 @@ import { join, resolve } from "node:path";
 import YAML from "yaml";
 import { z } from "zod";
 import { CONFIG_ENV_VAR, CONFIG_FILE_NAME, HOME_DIR_NAME } from "./brand.js";
+import { DEFAULT_LIMITS, type Limits } from "./limits.js";
 
 /**
  * The policy file. Everything is optional: an empty file (or no file) means
@@ -57,6 +58,28 @@ export const InjectionSchema = z
   })
   .strict();
 
+const count = z.number().int().min(0);
+export const LimitsSchema = z
+  .object({
+    /** Tool calls per session. 0 = no limit. */
+    max_calls: count.optional(),
+    /** Tool calls in any one minute. */
+    max_calls_per_minute: count.optional(),
+    /** The same tool with the same arguments within repeat_window. */
+    max_identical_calls: count.optional(),
+    /** Seconds, or a duration like "5m". */
+    repeat_window: z.union([count, z.string().regex(/^\d+\s*[smh]$/)]).optional(),
+    /** One tool failing this many times in a row. */
+    max_consecutive_errors: count.optional(),
+    /** Estimated tokens of tool output per session (about 4 characters per token). */
+    max_output_tokens: count.optional(),
+    /** Calls to this server per day, across sessions. */
+    max_calls_per_day: count.optional(),
+    /** block | approve (ask a person whether to keep going). */
+    on_limit: z.enum(["block", "approve"]).optional(),
+  })
+  .strict();
+
 export const ServerPolicySchema = z
   .object({
     /** What to do when a pinned tool's definition changes. */
@@ -76,6 +99,7 @@ export const ServerPolicySchema = z
       .optional(),
     rules: z.array(RuleSchema).optional(),
     injection: InjectionSchema.optional(),
+    limits: LimitsSchema.optional(),
   })
   .strict();
 
@@ -98,6 +122,7 @@ export interface ServerPolicy {
   deny: string[];
   approve: string[];
   rules: Rule[];
+  limits: Limits;
   injection: {
     mode: "off" | "rules" | "auto" | "full";
     action: "block" | "warn";
@@ -173,11 +198,36 @@ export function policyFor(config: Config, serverName: string): ServerPolicy {
     deny: [...(base.tools?.deny ?? []), ...(own.tools?.deny ?? [])],
     approve: [...(base.tools?.approve ?? []), ...(own.tools?.approve ?? [])],
     rules: [...(base.rules ?? []), ...(own.rules ?? [])],
+    limits: mergeLimits(base.limits, own.limits),
     injection: {
       mode: own.injection?.mode ?? base.injection?.mode ?? "auto",
       action: own.injection?.action ?? base.injection?.action ?? "block",
       scanDescriptions: own.injection?.scan_descriptions ?? base.injection?.scan_descriptions ?? true,
     },
+  };
+}
+
+function seconds(v: number | string | undefined): number | undefined {
+  if (v === undefined || typeof v === "number") return v;
+  const n = Number.parseInt(v, 10);
+  return v.trim().endsWith("h") ? n * 3600 : v.trim().endsWith("m") ? n * 60 : n;
+}
+
+function mergeLimits(
+  base: z.infer<typeof LimitsSchema> | undefined,
+  own: z.infer<typeof LimitsSchema> | undefined,
+): Limits {
+  const pick = <K extends keyof z.infer<typeof LimitsSchema>>(k: K) => own?.[k] ?? base?.[k];
+  const d = DEFAULT_LIMITS;
+  return {
+    maxCalls: pick("max_calls") ?? d.maxCalls,
+    maxCallsPerMinute: pick("max_calls_per_minute") ?? d.maxCallsPerMinute,
+    maxIdenticalCalls: pick("max_identical_calls") ?? d.maxIdenticalCalls,
+    repeatWindowSec: seconds(pick("repeat_window")) ?? d.repeatWindowSec,
+    maxConsecutiveErrors: pick("max_consecutive_errors") ?? d.maxConsecutiveErrors,
+    maxOutputTokens: pick("max_output_tokens") ?? d.maxOutputTokens,
+    maxCallsPerDay: pick("max_calls_per_day") ?? d.maxCallsPerDay,
+    onLimit: pick("on_limit") ?? d.onLimit,
   };
 }
 
@@ -193,6 +243,15 @@ servers:
       - arg: "*"
         deny_paths: ["~/.ssh/**", "~/.aws/**", "~/.config/gcloud/**", "**/.env", "**/.env.*"]
         message: Access to credential files is blocked by policy.
+    limits:               # stop runaway agents (0 turns a limit off)
+      max_identical_calls: 10     # same tool + same arguments within repeat_window
+      repeat_window: 5m
+      max_consecutive_errors: 8   # one tool failing again and again
+      max_calls_per_minute: 120
+      max_calls: 1000             # per session
+      max_output_tokens: 2000000  # estimated tool output fed back to the agent, per session
+      max_calls_per_day: 0        # per server, across sessions
+      on_limit: approve           # approve: ask you whether to keep going | block
     injection:
       mode: auto          # off | rules | auto | full. auto and full use Claude when an API key is set
       action: block       # block | warn: what to do with tool output that is a prompt injection

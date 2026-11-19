@@ -3,6 +3,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import type { JSONRPCMessage } from "@modelcontextprotocol/sdk/types.js";
 import { PRODUCT_NAME } from "./brand.js";
 import type { Guard, ToolDefinition } from "./guard.js";
+import type { Limiter } from "./limits.js";
 import type { Scanner, ScanResult } from "./scanner/index.js";
 import type { Direction, LogStore } from "./store.js";
 
@@ -24,6 +25,8 @@ export interface GatewayOptions {
   sessionId: string;
   /** Policy and pinning checks. Without one the gateway is a pure pass-through logger. */
   guard?: Guard;
+  /** Loop and budget limits. Needs a guard. */
+  limiter?: Limiter;
   /** Prompt-injection scanner for tool outputs and descriptions. Needs a guard. */
   scanner?: Scanner;
   /** How long to wait for a person to answer an approval request. */
@@ -114,11 +117,35 @@ export class Gateway {
         this.respondBlocked(m, decision.reason, decision.by);
         return;
       }
+      const limiter = this.opts.limiter;
+      const limit = limiter ? limiter.check(name, args) : ({ action: "allow" } as const);
+      if (limit.action !== "allow") {
+        this.safely(() => guard.event("limit_reached", name, limit.reason));
+        if (limit.action === "block") {
+          this.respondBlocked(m, limit.reason, `limit:${limit.kind}`);
+          return;
+        }
+        // One prompt covers the limit and, if the policy also wants approval for this tool, that too.
+        void this.holdForApproval(m, name, args, limit.reason, {
+          prompt: `${PRODUCT_NAME}: the agent may be stuck. ${limit.reason.split(". This looks")[0]}.\n\nLet it keep going?`,
+          by: `limit:${limit.kind}`,
+          onAccept: () => limiter?.grant(limit.kind),
+        });
+        return;
+      }
       if (decision.action === "approve") {
         void this.holdForApproval(m, name, args, decision.reason);
         return;
       }
+      this.forwardCall(m, name, args);
+      return;
     }
+    this.send("server", m);
+  }
+
+  /** Sends an allowed tool call to the server and counts it toward the limits. */
+  private forwardCall(m: AnyMessage, name: string, args: Record<string, unknown> | undefined): void {
+    this.opts.limiter?.record(name, args);
     this.send("server", m);
   }
 
@@ -127,6 +154,7 @@ export class Gateway {
     name: string,
     args: Record<string, unknown> | undefined,
     reason: string,
+    opts: { prompt?: string; by?: string; onAccept?: () => void } = {},
   ): Promise<void> {
     const guard = this.opts.guard as Guard;
     const k = keyOf("agent", m.id);
@@ -134,20 +162,23 @@ export class Gateway {
       guard.recordApproval(name, false, "agent cannot show approval prompts");
       this.respondBlocked(
         m,
-        `${reason}, but this agent cannot show approval prompts. Allow the tool in the policy file to use it.`,
-        "approval:unsupported",
+        opts.by
+          ? `${reason}. (This agent cannot show approval prompts, so the limit blocks the call.)`
+          : `${reason}, but this agent cannot show approval prompts. Allow the tool in the policy file to use it.`,
+        opts.by ?? "approval:unsupported",
       );
       return;
     }
     this.heldCalls.add(k);
     const answer = await this.askAgent(
-      `${PRODUCT_NAME}: allow "${name}"?\n\nArguments:\n${JSON.stringify(args ?? {}, null, 2).slice(0, 1500)}`,
+      `${opts.prompt ?? `${PRODUCT_NAME}: allow "${name}"?`}\n\nArguments:\n${JSON.stringify(args ?? {}, null, 2).slice(0, 1500)}`,
     );
     if (!this.heldCalls.has(k) || this.closed) return; // cancelled while waiting
     this.heldCalls.delete(k);
     if (answer === "accept") {
       guard.recordApproval(name, true, "approved in the agent's prompt");
-      this.send("server", m);
+      opts.onAccept?.();
+      this.forwardCall(m, name, args);
     } else {
       guard.recordApproval(
         name,
@@ -156,10 +187,12 @@ export class Gateway {
       );
       this.respondBlocked(
         m,
-        answer === "timeout"
-          ? `no approval for "${name}" within the time limit`
-          : `the approval prompt for "${name}" was declined`,
-        "approval:declined",
+        opts.by
+          ? `${reason}. The prompt asking whether to continue was declined`
+          : answer === "timeout"
+            ? `no approval for "${name}" within the time limit`
+            : `the approval prompt for "${name}" was declined`,
+        opts.by ?? "approval:declined",
       );
     }
   }
@@ -401,6 +434,8 @@ export class Gateway {
       store.setServerInfo(sessionId, info?.name ?? null, info?.version ?? null, str(result.protocolVersion));
     }
     const toolError = p.method === "tools/call" && result.isError === true;
+    if (p.method === "tools/call" && requester === "agent" && p.toolName !== null)
+      this.opts.limiter?.result(p.toolName, toolError, resultText(result).length);
     store.finishRequest(p.rowId, {
       status: toolError ? "tool_error" : "ok",
       response: result,
