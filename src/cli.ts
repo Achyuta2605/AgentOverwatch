@@ -9,7 +9,7 @@ import { CLI_NAME, CONFIG_FILE_NAME, PRODUCT_NAME } from "./brand.js";
 import { ConfigError, loadConfig, policyFor, STARTER_CONFIG } from "./config.js";
 import { startDashboard } from "./dashboard/server.js";
 import { formatCalls, formatDiff, formatEvents, formatPins, formatSessions } from "./format.js";
-import { runGateway } from "./run.js";
+import { parseHeaders, runGateway } from "./run.js";
 import { apiKeyFromEnv, ClaudeClassifier, type ScanMode } from "./scanner/index.js";
 import { defaultDbPath, LogStore } from "./store.js";
 
@@ -32,10 +32,18 @@ program
   .description(
     "Start an MCP server behind the gateway. Use it in place of the server's command in your agent's MCP config.",
   )
-  .usage("[options] -- <command> [args...]")
-  .argument("<command>", "command that starts the real MCP server")
+  .usage("[options] -- <command> [args...]  |  [options] --url <url>")
+  .argument("[command]", "command that starts the real MCP server")
   .argument("[args...]", "arguments for that command")
-  .option("-n, --name <name>", "name to show for this server in logs (default: guessed from the command)")
+  .option("-n, --name <name>", "name to show for this server in logs (default: guessed from the command or URL)")
+  .option("--url <url>", "a remote MCP server (Streamable HTTP) instead of a local command")
+  .option(
+    "-H, --header <header>",
+    'HTTP header for a remote server, e.g. "Authorization: Bearer $TOKEN" (repeatable)',
+    (v: string, all: string[]) => [...all, v],
+    [] as string[],
+  )
+  .option("--sse", "the remote server uses the older HTTP+SSE transport")
   .option("--db <path>", "SQLite log file", defaultDbPath())
   .option("-c, --config <path>", `policy file (default: ./${CONFIG_FILE_NAME}, then ~/.agentoverwatch/config.yaml)`)
   .option("--approval-timeout <seconds>", "how long to wait for a person to approve a call", positiveInt, 120)
@@ -48,17 +56,36 @@ Example (Claude Code .mcp.json):
   "filesystem": {
     "command": "${CLI_NAME}",
     "args": ["run", "--", "npx", "-y", "@modelcontextprotocol/server-filesystem", "."]
+  }
+
+Example (remote server):
+  "linear": {
+    "command": "${CLI_NAME}",
+    "args": ["run", "--url", "https://mcp.example.com/mcp", "-H", "Authorization: Bearer \${LINEAR_TOKEN}"]
   }`,
   )
   .action(
     async (
-      command: string,
+      command: string | undefined,
       args: string[],
-      opts: { name?: string; db: string; config?: string; approvalTimeout: number; verbose?: boolean },
+      opts: {
+        name?: string;
+        db: string;
+        config?: string;
+        approvalTimeout: number;
+        verbose?: boolean;
+        url?: string;
+        header: string[];
+        sse?: boolean;
+      },
     ) => {
+      if (opts.url && command) throw new Error("give either --url or a command, not both");
       const code = await runGateway({
         command,
         args,
+        url: opts.url,
+        headers: parseHeaders(opts.header),
+        remoteTransport: opts.sse ? "sse" : "http",
         name: opts.name,
         dbPath: opts.db,
         configPath: opts.config,
