@@ -7,3 +7,4 @@ coverage/
 .DS_Store
 *.log
 bench/external/
+redteam-results/
