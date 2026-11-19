@@ -375,7 +375,32 @@ export class Gateway {
 
   private send(to: Side, message: AnyMessage): void {
     const t = to === "server" ? this.opts.server : this.opts.agent;
-    t.send(message).catch((err: Error) => this.warn(`could not deliver message to ${to}: ${err.message}`));
+    t.send(message).catch((err: Error) => {
+      this.warn(`could not deliver message to ${to}: ${err.message}`);
+      // A request the server never got would leave the agent waiting forever: answer it with an error.
+      if (to === "server" && typeof message.method === "string" && message.id !== undefined && message.id !== null) {
+        const error = {
+          code: -32000,
+          message: `${PRODUCT_NAME}: the request to the MCP server failed: ${err.message}`,
+        };
+        const k = keyOf("agent", message.id);
+        const p = this.pending.get(k);
+        if (p) {
+          this.pending.delete(k);
+          this.safely(() =>
+            this.opts.store.finishRequest(p.rowId, {
+              status: "error",
+              response: error,
+              errorMessage: error.message,
+              durationMs: round(performance.now() - p.startedPerf),
+            }),
+          );
+        }
+        this.opts.agent
+          .send({ jsonrpc: "2.0", id: message.id, error } as JSONRPCMessage)
+          .catch(() => this.warn("could not tell the agent about it either"));
+      }
+    });
   }
 
   private safely(fn: () => void): void {

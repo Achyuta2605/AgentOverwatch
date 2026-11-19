@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { basename } from "node:path";
+import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { ConfigError, type LoadedConfig, loadConfig, policyFor } from "./config.js";
 import { Gateway } from "./gateway.js";
 import { Guard } from "./guard.js";
@@ -10,8 +13,15 @@ import { LogStore } from "./store.js";
 import { UpstreamProcess } from "./upstream.js";
 
 export interface RunOptions {
-  command: string;
+  /** Local server: the command that starts it. */
+  command?: string;
   args: string[];
+  /** Remote server: its MCP endpoint. Used instead of `command`. */
+  url?: string;
+  /** Extra HTTP headers for a remote server, such as Authorization. Never logged. */
+  headers?: Record<string, string>;
+  /** Remote servers speak Streamable HTTP by default; `sse` is for older servers. */
+  remoteTransport?: "http" | "sse";
   name?: string;
   dbPath?: string;
   /** Policy file. Defaults to ./agentoverwatch.yaml, then ~/.agentoverwatch/config.yaml. */
@@ -35,6 +45,31 @@ export function inferServerName(command: string, args: string[]): string {
   return (last.replace(/@[^@]*$/, "") || target).replace(/\.(m?js|ts|py)$/, "");
 }
 
+/** A readable name for a remote server: `https://mcp.linear.app/mcp` → `mcp.linear.app`. */
+export function inferRemoteName(url: string): string {
+  return new URL(url).hostname;
+}
+
+/** The URL as it is safe to log: no credentials, no query values (they often hold tokens). */
+export function redactUrl(url: string): string {
+  const u = new URL(url);
+  u.username = "";
+  u.password = "";
+  for (const key of [...u.searchParams.keys()]) u.searchParams.set(key, "***");
+  return u.toString().replace(/%2A%2A%2A/g, "***");
+}
+
+/** Parses repeated `Name: value` options. */
+export function parseHeaders(list: string[]): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const h of list) {
+    const i = h.indexOf(":");
+    if (i <= 0) throw new Error(`header "${h}" should look like "Name: value"`);
+    out[h.slice(0, i).trim()] = h.slice(i + 1).trim();
+  }
+  return out;
+}
+
 /** Runs one gateway session and resolves with the exit code the process should use. */
 export async function runGateway(opts: RunOptions): Promise<number> {
   const log = (m: string) => process.stderr.write(`[agentoverwatch] ${m}\n`);
@@ -48,15 +83,46 @@ export async function runGateway(opts: RunOptions): Promise<number> {
     return 1;
   }
 
+  if (!opts.url && !opts.command) {
+    log("give either the command that starts a local MCP server, or --url for a remote one");
+    return 1;
+  }
+  let remote: URL | undefined;
+  if (opts.url) {
+    try {
+      remote = new URL(opts.url);
+      if (remote.protocol !== "https:" && remote.protocol !== "http:") throw new Error("only http and https URLs");
+    } catch (err) {
+      log(`invalid --url: ${(err as Error).message}`);
+      return 1;
+    }
+  }
+
   const store = new LogStore(opts.dbPath);
   const sessionId = randomUUID();
-  const serverName = opts.name ?? inferServerName(opts.command, opts.args);
+  const serverName =
+    opts.name ?? (remote ? inferRemoteName(remote.href) : inferServerName(opts.command as string, opts.args));
 
-  const server = new UpstreamProcess({ command: opts.command, args: opts.args });
+  let server: Transport;
+  let local: UpstreamProcess | undefined;
+  if (remote) {
+    const requestInit = { headers: opts.headers ?? {} };
+    server =
+      opts.remoteTransport === "sse"
+        ? new SSEClientTransport(remote, { requestInit })
+        : new StreamableHTTPClientTransport(remote, { requestInit });
+  } else {
+    local = new UpstreamProcess({ command: opts.command as string, args: opts.args });
+    server = local;
+  }
   try {
     await server.start();
   } catch (err) {
-    log(`could not start MCP server "${opts.command}": ${(err as Error).message}`);
+    log(
+      remote
+        ? `could not connect to ${redactUrl(remote.href)}: ${(err as Error).message}`
+        : `could not start MCP server "${opts.command}": ${(err as Error).message}`,
+    );
     store.close();
     return 1;
   }
@@ -64,8 +130,8 @@ export async function runGateway(opts: RunOptions): Promise<number> {
   store.startSession({
     id: sessionId,
     serverName,
-    command: [opts.command, ...opts.args].join(" "),
-    pid: server.pid,
+    command: remote ? redactUrl(remote.href) : [opts.command, ...opts.args].join(" "),
+    pid: local?.pid ?? process.pid,
     startedAt: Date.now(),
   });
   if (opts.verbose) {
@@ -123,7 +189,7 @@ export async function runGateway(opts: RunOptions): Promise<number> {
       finished = true;
       gateway.close();
       if (opts.verbose) log(`session ${sessionId.slice(0, 8)} ending: ${reason}`);
-      await server.close();
+      await (local ? local.close() : server.close().catch(() => {}));
       try {
         store.endSession(sessionId, Date.now(), code);
       } finally {
@@ -132,9 +198,11 @@ export async function runGateway(opts: RunOptions): Promise<number> {
       resolve(code ?? 0);
     };
 
-    server.onexit = (code, signal) => {
-      void finish(code ?? (signal ? 1 : 0), `server exited (${signal ?? code})`);
-    };
+    if (local) {
+      local.onexit = (code, signal) => {
+        void finish(code ?? (signal ? 1 : 0), `server exited (${signal ?? code})`);
+      };
+    }
     // The agent closing our stdin is the normal way a session ends.
     process.stdin.once("end", () => void finish(0, "agent closed the connection"));
     process.stdin.once("close", () => void finish(0, "agent closed the connection"));

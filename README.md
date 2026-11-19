@@ -4,7 +4,7 @@
 
 Coding agents like Claude Code and Cursor now call dozens of third-party MCP tools on their own. Any one of those tools can change its description to smuggle in instructions, return output with a hidden prompt injection, or get stuck in a loop that burns money. AgentOverwatch sits in the middle of every tool call, so you can see what your agent is doing and stop it when something is wrong.
 
-> **Status: week 5 of 6.** AgentOverwatch logs every call, pins tool definitions, enforces a policy file, scans tool output for prompt injection, stops runaway agents, and shows it all in a local dashboard. Remote servers and the public beta land next (see [Roadmap](#roadmap)).
+> **Status: week 5 of 6.** AgentOverwatch logs every call, pins tool definitions, enforces a policy file, scans tool output for prompt injection, stops runaway agents, works with local and remote servers, and shows it all in a local dashboard. The public beta lands next (see [Roadmap](#roadmap)).
 
 ![AgentOverwatch dashboard: tool calls, blocked calls, injections caught, loops stopped and security events](docs/dashboard.png)
 
@@ -16,7 +16,8 @@ Coding agents like Claude Code and Cursor now call dozens of third-party MCP too
 - **Loop and budget guard.** Stops an agent that repeats the same call, hammers a failing tool, or burns through calls and output tokens. By default it asks you whether to keep going instead of silently killing the task. See [Limits](#limits).
 - **Local dashboard.** `agentoverwatch dashboard` opens a live view of every call, what was blocked and why, security events, and tools waiting for review, with a one-click approve and a diff of what changed. It listens on 127.0.0.1 only.
 - **Fails closed.** An invalid policy file stops the server from starting instead of running it unprotected. Blocked calls come back to the model as a clear tool error, so it can explain or try something else.
-- **Pass-through for everything else.** Works with any stdio MCP server. The agent and the server see the same messages they would without it.
+- **Local and remote servers.** Works with any stdio MCP server, and with remote servers over Streamable HTTP (or the older SSE transport) with `--url`.
+- **Pass-through for everything else.** The agent and the server see the same messages they would without it.
 - **Logs every request in both directions** (agent to server and server to agent) with its arguments, result, status and latency, in a local SQLite file.
 - **Flags problems:** protocol errors, tool-reported errors, cancelled calls and requests the server never answered.
 - **Adds about 0.4 ms per call** (p50; 0.5 ms at p95), measured over 1,000 calls against a local server.
@@ -67,6 +68,23 @@ TIME                 SESSION   SERVER             DIR  METHOD                   
 ```
 
 That log is from a real Claude Code session. `←` is a request the server sent back to the agent.
+
+### Remote servers
+
+Hosted MCP servers (Linear, GitHub, Sentry and others) get the same protection. Your agent still starts AgentOverwatch locally; AgentOverwatch talks to the remote server:
+
+```json
+{
+  "mcpServers": {
+    "linear": {
+      "command": "agentoverwatch",
+      "args": ["run", "--url", "https://mcp.example.com/mcp", "-H", "Authorization: Bearer ${LINEAR_TOKEN}"]
+    }
+  }
+}
+```
+
+Add `--sse` for servers that still use the older HTTP+SSE transport. Headers are sent to the server but never written to the log, and tokens in the URL's query are masked.
 
 ## Catching a rug pull
 
@@ -227,7 +245,8 @@ It only listens on 127.0.0.1, refuses requests for other host names, and approvi
 
 | Command | What it does |
 | --- | --- |
-| `agentoverwatch run [--name <name>] [--config <path>] [--db <path>] [-v] -- <command> [args...]` | Start an MCP server behind the gateway. `--name` sets the server name used in logs, pins and the policy file (otherwise guessed from the command). |
+| `agentoverwatch run [--name <name>] [--config <path>] [--db <path>] [-v] -- <command> [args...]` | Start a local MCP server behind the gateway. `--name` sets the server name used in logs, pins and the policy file (otherwise guessed from the command). |
+| `agentoverwatch run --url <url> [-H "Name: value"]... [--sse] [--name <name>]` | Put a remote MCP server behind the gateway. The name defaults to the URL's host. |
 | `agentoverwatch logs [--limit n] [--session id] [--server name] [--tool name] [--problems] [--blocked] [--json]` | Show recent calls. |
 | `agentoverwatch sessions [--limit n] [--json]` | Show recent sessions with call and problem counts. |
 | `agentoverwatch events [--server name]` | Security events: pins created or changed, tools hidden, calls blocked, approvals, injections blocked or suspected, limits reached. |
@@ -261,7 +280,7 @@ AgentOverwatch starts the real server as a child process with your full environm
 | 2 | Tool pinning and a YAML policy file with path, pattern and approval rules (**done**) |
 | 3 | Prompt-injection scanner for tool outputs and descriptions (fast rules, then Claude Haiku, then Claude Sonnet for hard cases), plus a benchmark (**done**) |
 | 4 | Loop and budget guard: limits on repeated calls, failing tools, call rate, calls and output per session, calls per day (**done**) |
-| 5 | Local dashboard (**done**), remote (HTTP) MCP servers, nightly red-team agent |
+| 5 | Local dashboard and remote (HTTP) MCP servers (**done**), nightly red-team agent |
 | 6 | Public beta |
 
 ## Development
