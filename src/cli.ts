@@ -7,6 +7,7 @@ import { Command, InvalidArgumentError } from "commander";
 import { formatBench, runBench } from "./bench.js";
 import { CLI_NAME, CONFIG_FILE_NAME, PRODUCT_NAME } from "./brand.js";
 import { ConfigError, loadConfig, policyFor, STARTER_CONFIG } from "./config.js";
+import { startDashboard } from "./dashboard/server.js";
 import { formatCalls, formatDiff, formatEvents, formatPins, formatSessions } from "./format.js";
 import { runGateway } from "./run.js";
 import { apiKeyFromEnv, ClaudeClassifier, type ScanMode } from "./scanner/index.js";
@@ -229,6 +230,29 @@ program
       console.error(err instanceof ConfigError ? err.message : (err as Error).message);
       process.exitCode = 1;
     }
+  });
+
+program
+  .command("dashboard")
+  .description("Open the local dashboard: live calls, blocked calls, security events and tool pins")
+  .option("-p, --port <port>", "port on 127.0.0.1", positiveInt, 4319)
+  .option("--db <path>", "SQLite log file", defaultDbPath())
+  .action(async (opts: { port: number; db: string }) => {
+    const store = new LogStore(opts.db);
+    const { url, close } = await startDashboard({ store, port: opts.port }).catch((err: NodeJS.ErrnoException) => {
+      store.close();
+      throw new Error(
+        err.code === "EADDRINUSE" ? `port ${opts.port} is in use; pick another with --port` : err.message,
+      );
+    });
+    console.log(`${PRODUCT_NAME} dashboard: ${url}  (Ctrl+C to stop)`);
+    const stop = async () => {
+      await close();
+      store.close();
+      process.exit(0);
+    };
+    process.once("SIGINT", stop);
+    process.once("SIGTERM", stop);
   });
 
 program

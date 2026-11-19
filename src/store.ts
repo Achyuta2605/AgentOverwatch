@@ -318,6 +318,54 @@ export class LogStore {
     return this.db.prepare(sql).all(args) as CallRow[];
   }
 
+  getCall(id: number): CallRow | undefined {
+    return this.db
+      .prepare("SELECT c.*, s.server_name FROM calls c JOIN sessions s ON s.id = c.session_id WHERE c.id = ?")
+      .get(id) as CallRow | undefined;
+  }
+
+  /** Headline numbers since a time, for the dashboard. */
+  stats(since: number): {
+    toolCalls: number;
+    blocked: number;
+    problems: number;
+    sessions: number;
+    activeSessions: number;
+    p50Ms: number | null;
+    events: Record<string, number>;
+  } {
+    const calls = this.db
+      .prepare(
+        `SELECT COUNT(*) AS toolCalls,
+           COALESCE(SUM(CASE WHEN status = 'blocked' THEN 1 ELSE 0 END), 0) AS blocked,
+           COALESCE(SUM(CASE WHEN status NOT IN ('ok', 'pending', 'blocked') THEN 1 ELSE 0 END), 0) AS problems
+         FROM calls WHERE method = 'tools/call' AND started_at >= ?`,
+      )
+      .get(since) as { toolCalls: number; blocked: number; problems: number };
+    const sessions = this.db
+      .prepare(
+        `SELECT COUNT(*) AS sessions, COALESCE(SUM(CASE WHEN ended_at IS NULL THEN 1 ELSE 0 END), 0) AS active
+         FROM sessions WHERE started_at >= ? OR ended_at IS NULL`,
+      )
+      .get(since) as { sessions: number; active: number };
+    const durations = this.db
+      .prepare(
+        "SELECT duration_ms AS d FROM calls WHERE method = 'tools/call' AND started_at >= ? AND duration_ms IS NOT NULL ORDER BY duration_ms",
+      )
+      .all(since) as { d: number }[];
+    const events = this.db.prepare("SELECT kind, COUNT(*) AS n FROM events WHERE at >= ? GROUP BY kind").all(since) as {
+      kind: string;
+      n: number;
+    }[];
+    return {
+      ...calls,
+      sessions: sessions.sessions,
+      activeSessions: sessions.active,
+      p50Ms: durations.length ? (durations[Math.floor(durations.length / 2)]?.d ?? null) : null,
+      events: Object.fromEntries(events.map((e) => [e.kind, e.n])),
+    };
+  }
+
   /** Tool calls to a server since a time, not counting blocked ones. */
   countToolCalls(serverName: string, since: number): number {
     const row = this.db
