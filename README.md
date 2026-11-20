@@ -28,7 +28,17 @@ Nothing leaves your machine. The log lives in `~/.agentoverwatch/agentoverwatch.
 
 Requires Node.js 22.12 or newer. Install it from source (see the note below the examples) until it is published to npm.
 
-Put `agentoverwatch run --` in front of the command that starts any MCP server.
+**One command** protects every MCP server you already use:
+
+```bash
+agentoverwatch install --dry-run   # see what would change
+agentoverwatch install             # do it (backs up each file first)
+agentoverwatch uninstall           # undo
+```
+
+It finds the MCP config files of Claude Code (project `.mcp.json`, and your user and local servers in `~/.claude.json`), Cursor, Claude Desktop and Windsurf, and routes each server through AgentOverwatch. Nothing else in those files changes. Narrow it with `--client cursor`, `--project`, `--global` or `--only github,linear`. Restart your agent afterwards.
+
+**By hand:** put `agentoverwatch run --` in front of the command that starts any MCP server.
 
 **Claude Code** (`.mcp.json` in your project, or `claude mcp add`):
 
@@ -262,6 +272,8 @@ Every night a GitHub Actions job (`.github/workflows/redteam.yml`) asks Claude t
 | `agentoverwatch reset-pins <server>` | Forget a server's pins; they are recreated on next use. |
 | `agentoverwatch init` | Write a starter `agentoverwatch.yaml`. |
 | `agentoverwatch check-config [server]` | Validate the policy file and print the merged policy. |
+| `agentoverwatch install [--dry-run] [--client c] [--project\|--global] [--only a,b]` | Route the MCP servers in your agents' config files through AgentOverwatch (with backups). |
+| `agentoverwatch uninstall [same options]` | Undo `install`. |
 | `agentoverwatch dashboard [--port n]` | Open the local dashboard. |
 | `agentoverwatch redteam [-t n] [-p n] [-b n] [-o dir]` | Have Claude write fresh attacks and measure the scanner on them. |
 | `agentoverwatch bench [files...] [--mode rules\|auto\|full] [--limit n] [-v] [--json]` | Measure the injection scanner on JSONL case files. |
