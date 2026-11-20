@@ -9,6 +9,7 @@ import { CLI_NAME, CONFIG_FILE_NAME, PRODUCT_NAME } from "./brand.js";
 import { ConfigError, loadConfig, policyFor, STARTER_CONFIG } from "./config.js";
 import { startDashboard } from "./dashboard/server.js";
 import { formatCalls, formatDiff, formatEvents, formatPins, formatSessions } from "./format.js";
+import { applyConfigs, CLIENTS, type Client, findConfigs, formatChanges } from "./install.js";
 import { claudeGenerator, evaluate, formatReport, generateCases } from "./redteam.js";
 import { parseHeaders, runGateway } from "./run.js";
 import { apiKeyFromEnv, ClaudeClassifier, type ScanMode, Scanner } from "./scanner/index.js";
@@ -259,6 +260,40 @@ program
       process.exitCode = 1;
     }
   });
+
+for (const mode of ["install", "uninstall"] as const) {
+  program
+    .command(mode)
+    .description(
+      mode === "install"
+        ? "Put every MCP server in your Claude Code, Cursor, Claude Desktop and Windsurf configs behind AgentOverwatch"
+        : "Undo install: connect your agents to their MCP servers directly again",
+    )
+    .option("--client <name>", `only this client: ${CLIENTS.join(", ")}`)
+    .option("--project", "only this project's config files")
+    .option("--global", "only your user-wide config files")
+    .option("--only <servers>", "only these servers (comma-separated names)")
+    .option("--dry-run", "show what would change without changing anything")
+    .action((opts: { client?: string; project?: boolean; global?: boolean; only?: string; dryRun?: boolean }) => {
+      if (opts.client && !CLIENTS.includes(opts.client as Client))
+        throw new Error(`unknown client "${opts.client}"; use one of ${CLIENTS.join(", ")}`);
+      const locations = findConfigs().filter(
+        (l) =>
+          (!opts.client || l.client === opts.client) &&
+          (!opts.project || l.scope === "project") &&
+          (!opts.global || l.scope === "global"),
+      );
+      const result = applyConfigs(locations, mode, {
+        dryRun: opts.dryRun,
+        only: opts.only
+          ?.split(",")
+          .map((s) => s.trim())
+          .filter(Boolean),
+      });
+      console.log(formatChanges(result, mode, Boolean(opts.dryRun)));
+      if (result.errors.length) process.exitCode = 1;
+    });
+}
 
 program
   .command("dashboard")
